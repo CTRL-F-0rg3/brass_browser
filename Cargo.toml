@@ -14,3 +14,4 @@ egui = "0.27"
 egui-winit = "0.27"
 eframe = { version = "0.27", features = ["glow"] }
 glow = "0.13"
+dpi = "0.1" # Dodane dla PhysicalSize
