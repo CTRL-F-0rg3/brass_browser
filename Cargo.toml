@@ -4,16 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-winit = "0.29"
-servo = { git = "https://github.com/servo/servo", branch = "main" }
+wry = "0.37"
+tao = "0.24"
+egui = "0.27"
+eframe = { version = "0.27", features = ["glow"] }
 log = "0.4"
 env_logger = "0.10"
-
-# Warstwa interfejsu użytkownika
-egui = "0.27"
-egui-winit = "0.27"
-eframe = { version = "0.27", features = ["glow"] }
-glow = "0.13"
-dpi = "0.1" # Dodane dla PhysicalSize
-url = "2.5"
-euclid = "0.22"
