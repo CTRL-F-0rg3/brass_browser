@@ -1,6 +1,8 @@
 use servo::{
-    DeviceIntPoint, DeviceIntRect, EventLoopWaker, RenderingContext, Servo, ServoBuilder,
-    SoftwareRenderingContext, WebView, WebViewBuilder, WebViewDelegate,
+    DeviceIntPoint, DeviceIntRect, DevicePoint, EventLoopWaker, InputEvent, MouseButton,
+    MouseButtonAction, RenderingContext, Servo, ServoBuilder,
+    SoftwareRenderingContext, WebView, WebViewBuilder, WebViewDelegate, WebViewPoint,
+    WheelDelta, WheelMode,
 };
 use std::rc::Rc;
 use std::sync::{
@@ -41,8 +43,8 @@ pub struct BrowserEngine {
     webview: Option<WebView>,
     rendering_context: Option<Rc<SoftwareRenderingContext>>,
     needs_repaint: Arc<AtomicBool>,
-    width: u32,
-    height: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl BrowserEngine {
@@ -128,6 +130,92 @@ impl BrowserEngine {
         self.needs_repaint.store(false, Ordering::SeqCst);
     }
 
+    /// Obsługa kliknięć myszy
+    pub fn handle_mouse_button(&mut self, button: u8, pressed: bool, x: f32, y: f32) {
+        if let (Some(webview), Some(servo)) = (&self.webview, &self.servo) {
+            let servo_button = match button {
+                0 => MouseButton::Primary,
+                1 => MouseButton::Secondary,
+                2 => MouseButton::Auxiliary,
+                _ => return,
+            };
+
+            let action = if pressed {
+                MouseButtonAction::Down
+            } else {
+                MouseButtonAction::Up
+            };
+
+            // NAPRAWA: Używamy DevicePoint (f32) zamiast DeviceIntPoint (i32)
+            let point = WebViewPoint::Device(DevicePoint::new(x, y));
+
+            let event = InputEvent::MouseButton(servo::MouseButtonEvent {
+                action,
+                button: servo_button,
+                point,
+            });
+
+            webview.notify_input_event(event);
+            servo.spin_event_loop();
+        }
+    }
+
+    /// Obsługa ruchu myszy
+    pub fn handle_mouse_move(&mut self, x: f32, y: f32) {
+        if let (Some(webview), Some(servo)) = (&self.webview, &self.servo) {
+            // NAPRAWA: Używamy DevicePoint (f32)
+            let point = WebViewPoint::Device(DevicePoint::new(x, y));
+            
+            // NAPRAWA: Dodano brakujące pole is_compatibility_event_for_touch
+            let event = InputEvent::MouseMove(servo::MouseMoveEvent {
+                point,
+                is_compatibility_event_for_touch: false,
+            });
+
+            webview.notify_input_event(event);
+            servo.spin_event_loop();
+        }
+    }
+
+    /// Obsługa scrollowania
+    pub fn handle_wheel(&mut self, delta_x: f32, delta_y: f32, x: f32, y: f32) {
+        if let (Some(webview), Some(servo)) = (&self.webview, &self.servo) {
+            // NAPRAWA: Używamy DevicePoint (f32)
+            let point = WebViewPoint::Device(DevicePoint::new(x, y));
+            
+            let event = InputEvent::Wheel(servo::WheelEvent {
+                delta: WheelDelta {
+                    x: delta_x as f64,
+                    y: delta_y as f64,
+                    z: 0.0,
+                    mode: WheelMode::DeltaLine,
+                },
+                point,
+            });
+
+            webview.notify_input_event(event);
+            servo.spin_event_loop();
+        }
+    }
+
+    /// Zmiana rozmiaru okna
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.width = width;
+        self.height = height;
+
+        if let Some(context) = &self.rendering_context {
+            let new_size = dpi::PhysicalSize::new(width, height);
+            context.resize(new_size);
+            
+            if let Some(webview) = &self.webview {
+                webview.paint();
+            }
+            if let Some(servo) = &self.servo {
+                servo.spin_event_loop();
+            }
+        }
+    }
+
     pub fn render_frame(&mut self) -> Option<Vec<u8>> {
         if let (Some(webview), Some(servo), Some(context)) = (
             &self.webview,
@@ -136,8 +224,6 @@ impl BrowserEngine {
         ) {
             webview.paint();
             servo.spin_event_loop();
-            
-            // Zgodnie z dokumentacją Servo: present() przed odczytem
             context.present();
 
             let min_point = DeviceIntPoint::new(0, 0);
