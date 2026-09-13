@@ -1,5 +1,5 @@
 use servo::{
-    DeviceIntPoint, DeviceIntRect, DevicePoint, EventLoopWaker, InputEvent, MouseButton,
+    DeviceIntPoint, DeviceIntRect, DevicePoint, EventLoopWaker, InputEvent, LoadStatus, MouseButton,
     MouseButtonAction, RenderingContext, Servo, ServoBuilder,
     SoftwareRenderingContext, WebView, WebViewBuilder, WebViewDelegate, WebViewPoint,
     WheelDelta, WheelMode,
@@ -18,7 +18,6 @@ impl EventLoopWaker for EguiEventLoopWaker {
     fn wake(&self) {
         self.needs_repaint.store(true, Ordering::SeqCst);
     }
-
     fn clone_box(&self) -> Box<dyn EventLoopWaker> {
         Box::new(Self {
             needs_repaint: Arc::clone(&self.needs_repaint),
@@ -28,6 +27,7 @@ impl EventLoopWaker for EguiEventLoopWaker {
 
 struct BrowserWebViewDelegate {
     needs_repaint: Arc<AtomicBool>,
+    is_loading: Arc<AtomicBool>,
 }
 
 impl WebViewDelegate for BrowserWebViewDelegate {
@@ -35,14 +35,29 @@ impl WebViewDelegate for BrowserWebViewDelegate {
         self.needs_repaint.store(true, Ordering::SeqCst);
         webview.paint();
     }
+
+    fn notify_load_status(&self, _webview: WebView, status: LoadStatus) {
+        match status {
+            LoadStatus::Started => {
+                self.is_loading.store(true, Ordering::SeqCst);
+                self.needs_repaint.store(true, Ordering::SeqCst);
+            }
+            LoadStatus::Complete => {
+                self.is_loading.store(false, Ordering::SeqCst);
+                println!("[Engine] Strona załadowana!");
+            }
+            _ => {}
+        }
+    }
 }
 
 pub struct BrowserEngine {
-    current_url: String,
-    servo: Option<Servo>,
-    webview: Option<WebView>,
-    rendering_context: Option<Rc<SoftwareRenderingContext>>,
+    pub current_url: String,
+    pub servo: Option<Servo>,
+    pub webview: Option<WebView>,
+    pub rendering_context: Option<Rc<SoftwareRenderingContext>>,
     needs_repaint: Arc<AtomicBool>,
+    is_loading: Arc<AtomicBool>,
     pub width: u32,
     pub height: u32,
 }
@@ -54,7 +69,8 @@ impl BrowserEngine {
             servo: None,
             webview: None,
             rendering_context: None,
-            needs_repaint: Arc::new(AtomicBool::new(false)),
+            needs_repaint: Arc::new(AtomicBool::new(true)),
+            is_loading: Arc::new(AtomicBool::new(true)),
             width: 1280,
             height: 720,
         }
@@ -62,8 +78,9 @@ impl BrowserEngine {
 
     pub fn init(&mut self) {
         println!("[Engine] Inicjalizacja Servo...");
-
         let needs_repaint = Arc::clone(&self.needs_repaint);
+        let is_loading = Arc::clone(&self.is_loading);
+
         let _waker = EguiEventLoopWaker {
             needs_repaint: needs_repaint.clone(),
         };
@@ -80,6 +97,7 @@ impl BrowserEngine {
 
         let delegate = BrowserWebViewDelegate {
             needs_repaint: needs_repaint.clone(),
+            is_loading: is_loading.clone(),
         };
 
         let rc_trait: Rc<dyn RenderingContext> = rc_context.clone();
@@ -89,11 +107,11 @@ impl BrowserEngine {
         let webview = webview_builder.build();
         println!("[Engine] ✓ WebView utworzony!");
 
-        let initial_url = self.current_url.clone();
         self.servo = Some(servo_inst);
         self.webview = Some(webview);
         self.rendering_context = Some(rc_context);
 
+        let initial_url = self.current_url.clone();
         self.navigate(&initial_url);
     }
 
@@ -106,14 +124,14 @@ impl BrowserEngine {
 
         println!("[Engine] Nawigacja do: {}", formatted_url);
         self.current_url = formatted_url.clone();
+        self.needs_repaint.store(true, Ordering::SeqCst);
+        self.is_loading.store(true, Ordering::SeqCst);
 
         if let (Some(webview), Some(servo)) = (&self.webview, &self.servo) {
             if let Ok(parsed_url) = url::Url::parse(&formatted_url) {
-                println!("[Engine] URL sparsowany: {}", parsed_url);
+                println!("[Engine] Ładowanie URL: {}", parsed_url);
                 webview.load(parsed_url);
                 servo.spin_event_loop();
-            } else {
-                eprintln!("[Engine] Błąd parsowania URL: {}", formatted_url);
             }
         }
     }
@@ -126,11 +144,14 @@ impl BrowserEngine {
         self.needs_repaint.load(Ordering::SeqCst)
     }
 
+    pub fn is_loading(&self) -> bool {
+        self.is_loading.load(Ordering::SeqCst)
+    }
+
     pub fn clear_repaint_flag(&self) {
         self.needs_repaint.store(false, Ordering::SeqCst);
     }
 
-    /// Obsługa kliknięć myszy
     pub fn handle_mouse_button(&mut self, button: u8, pressed: bool, x: f32, y: f32) {
         if let (Some(webview), Some(servo)) = (&self.webview, &self.servo) {
             let servo_button = match button {
@@ -139,50 +160,31 @@ impl BrowserEngine {
                 2 => MouseButton::Auxiliary,
                 _ => return,
             };
-
-            let action = if pressed {
-                MouseButtonAction::Down
-            } else {
-                MouseButtonAction::Up
-            };
-
-            // NAPRAWA: Używamy DevicePoint (f32) zamiast DeviceIntPoint (i32)
+            let action = if pressed { MouseButtonAction::Down } else { MouseButtonAction::Up };
             let point = WebViewPoint::Device(DevicePoint::new(x, y));
-
             let event = InputEvent::MouseButton(servo::MouseButtonEvent {
-                action,
-                button: servo_button,
-                point,
+                action, button: servo_button, point,
             });
-
             webview.notify_input_event(event);
             servo.spin_event_loop();
+            self.needs_repaint.store(true, Ordering::SeqCst);
         }
     }
 
-    /// Obsługa ruchu myszy
     pub fn handle_mouse_move(&mut self, x: f32, y: f32) {
-        if let (Some(webview), Some(servo)) = (&self.webview, &self.servo) {
-            // NAPRAWA: Używamy DevicePoint (f32)
+        if let Some(webview) = &self.webview {
             let point = WebViewPoint::Device(DevicePoint::new(x, y));
-            
-            // NAPRAWA: Dodano brakujące pole is_compatibility_event_for_touch
             let event = InputEvent::MouseMove(servo::MouseMoveEvent {
                 point,
                 is_compatibility_event_for_touch: false,
             });
-
             webview.notify_input_event(event);
-            servo.spin_event_loop();
         }
     }
 
-    /// Obsługa scrollowania
     pub fn handle_wheel(&mut self, delta_x: f32, delta_y: f32, x: f32, y: f32) {
         if let (Some(webview), Some(servo)) = (&self.webview, &self.servo) {
-            // NAPRAWA: Używamy DevicePoint (f32)
             let point = WebViewPoint::Device(DevicePoint::new(x, y));
-            
             let event = InputEvent::Wheel(servo::WheelEvent {
                 delta: WheelDelta {
                     x: delta_x as f64,
@@ -192,27 +194,23 @@ impl BrowserEngine {
                 },
                 point,
             });
-
             webview.notify_input_event(event);
             servo.spin_event_loop();
+            self.needs_repaint.store(true, Ordering::SeqCst);
         }
     }
 
-    /// Zmiana rozmiaru okna
     pub fn resize(&mut self, width: u32, height: u32) {
+        if width == self.width && height == self.height {
+            return;
+        }
+        println!("[Engine] Resize: {}x{}", width, height);
         self.width = width;
         self.height = height;
+        self.needs_repaint.store(true, Ordering::SeqCst);
 
         if let Some(context) = &self.rendering_context {
-            let new_size = dpi::PhysicalSize::new(width, height);
-            context.resize(new_size);
-            
-            if let Some(webview) = &self.webview {
-                webview.paint();
-            }
-            if let Some(servo) = &self.servo {
-                servo.spin_event_loop();
-            }
+            context.resize(dpi::PhysicalSize::new(width, height));
         }
     }
 
