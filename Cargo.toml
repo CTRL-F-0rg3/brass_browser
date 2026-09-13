@@ -4,9 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-wry = "0.37"
-tao = "0.24"
-egui = "0.27"
-eframe = { version = "0.27", features = ["glow"] }
+wry = { version = "0.41", features = ["os-webview"] }
+tao = "0.31"
 log = "0.4"
 env_logger = "0.10"
