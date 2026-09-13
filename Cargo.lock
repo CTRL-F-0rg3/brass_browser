@@ -901,9 +901,11 @@ dependencies = [
  "egui",
  "egui-winit",
  "env_logger 0.10.2",
+ "euclid",
  "glow 0.13.1",
  "log",
  "servo",
+ "url",
  "winit",
 ]
 

@@ -14,15 +14,16 @@ struct BrassBrowserApp {
 
 impl BrassBrowserApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let mut engine = BrowserEngine::new("https://trangorgeos.website");
+        let mut engine = BrowserEngine::new("https://example.com");
         engine.init();
+
+      
 
         let navbar = NavBar::new(engine.current_url());
         let width = 1280;
         let height = 720;
         
-        // Szara tekstura na start
-        let pixels = vec![100u8; width * height * 4];
+        let pixels = vec![255u8; width * height * 4];
         let image = egui::ColorImage::from_rgba_unmultiplied([width, height], &pixels);
         let handle = cc.egui_ctx.load_texture("browser_canvas", image, egui::TextureOptions::LINEAR);
         
@@ -36,19 +37,16 @@ impl BrassBrowserApp {
     }
 
     fn update_browser_frame(&mut self) {
-        // Renderujemy TYLKO gdy Servo zgłosi gotowość nowej klatki
-        if self.engine.needs_repaint() {
-            if let Some(pixels) = self.engine.render_frame() {
-                let image = egui::ColorImage::from_rgba_unmultiplied(
-                    [self.frame_width, self.frame_height],
-                    &pixels
-                );
-                
-                if let Some(texture) = &mut self.gl_texture_handle {
-                    texture.set(image, egui::TextureOptions::LINEAR);
-                }
+        // ZAWSZE wywołuj render_frame, nie tylko gdy needs_repaint
+        if let Some(pixels) = self.engine.render_frame() {
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [self.frame_width, self.frame_height],
+                &pixels,
+            );
+            
+            if let Some(texture) = &mut self.gl_texture_handle {
+                texture.set(image, egui::TextureOptions::LINEAR);
             }
-            self.engine.clear_repaint_flag();
         }
     }
 }
@@ -58,23 +56,20 @@ impl eframe::App for BrassBrowserApp {
         if let Some(new_url) = self.navbar.render(ctx) {
             self.engine.navigate(&new_url);
         }
-        
+
         self.update_browser_frame();
-        
+
         egui::CentralPanel::default().show(ctx, |ui| {
             let available_size = ui.available_size();
             if let Some(texture) = &self.gl_texture_handle {
                 ui.add(
-                    egui::Image::new(texture)
-                        .fit_to_exact_size(available_size)
+                    egui::Image::new(texture).fit_to_exact_size(available_size),
                 );
             }
         });
-        
-        // Żądamy przerysowania tylko jeśli Servo ma pracę
-        if self.engine.needs_repaint() {
-            ctx.request_repaint();
-        }
+
+        // BEZ WARUNKU - egui musi ciągle wywoływać update()
+        ctx.request_repaint();
     }
 }
 

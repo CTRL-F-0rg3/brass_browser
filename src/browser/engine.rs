@@ -1,5 +1,5 @@
 use servo::{
-    EventLoopWaker, RenderingContext, Servo, ServoBuilder, ServoUrl, 
+    DeviceIntPoint, DeviceIntRect, EventLoopWaker, RenderingContext, Servo, ServoBuilder,
     SoftwareRenderingContext, WebView, WebViewBuilder, WebViewDelegate,
 };
 use std::rc::Rc;
@@ -8,7 +8,6 @@ use std::sync::{
     Arc,
 };
 
-// 1. Implementacja EventLoopWaker
 struct EguiEventLoopWaker {
     needs_repaint: Arc<AtomicBool>,
 }
@@ -25,22 +24,21 @@ impl EventLoopWaker for EguiEventLoopWaker {
     }
 }
 
-// 2. Implementacja WebViewDelegate
 struct BrowserWebViewDelegate {
     needs_repaint: Arc<AtomicBool>,
 }
 
 impl WebViewDelegate for BrowserWebViewDelegate {
-    fn notify_new_frame_ready(&self, _webview: WebView) {
+    fn notify_new_frame_ready(&self, webview: WebView) {
         self.needs_repaint.store(true, Ordering::SeqCst);
+        webview.paint();
     }
 }
 
 pub struct BrowserEngine {
     current_url: String,
-    pub servo: Option<Servo>,
-    pub webview: Option<WebView>,
-    // Zmieniamy typ na Rc<SoftwareRenderingContext>
+    servo: Option<Servo>,
+    webview: Option<WebView>,
     rendering_context: Option<Rc<SoftwareRenderingContext>>,
     needs_repaint: Arc<AtomicBool>,
     width: u32,
@@ -63,49 +61,38 @@ impl BrowserEngine {
     pub fn init(&mut self) {
         println!("[Engine] Inicjalizacja Servo...");
 
-        let waker = EguiEventLoopWaker {
-            needs_repaint: Arc::clone(&self.needs_repaint),
+        let needs_repaint = Arc::clone(&self.needs_repaint);
+        let _waker = EguiEventLoopWaker {
+            needs_repaint: needs_repaint.clone(),
         };
 
-        let mut builder = ServoBuilder::default();
-        // Jeśli builder ma metodę z wakerem, użyj jej. W przeciwnym razie standardowy build.
+        let builder = ServoBuilder::default();
         let servo_inst = builder.build();
-
         println!("[Engine] ✓ Servo zbudowane!");
 
-        // 3. Tworzymy Software Rendering Context
         let size = dpi::PhysicalSize::new(self.width, self.height);
         let rendering_context = SoftwareRenderingContext::new(size)
             .expect("Nie udało się utworzyć SoftwareRenderingContext");
-
-        // 4. Opakowujemy w Rc (Reference Counted)
         let rc_context: Rc<SoftwareRenderingContext> = Rc::new(rendering_context);
-
-        println!("[Engine] ✓ Rendering context utworzony!");
+        println!("[Engine] ✓ RenderingContext utworzony!");
 
         let delegate = BrowserWebViewDelegate {
-            needs_repaint: Arc::clone(&self.needs_repaint),
+            needs_repaint: needs_repaint.clone(),
         };
 
-        // 5. Klonujemy Rc (to tylko zwiększa licznik, nie kopiuje kontekstu!)
-        // i rzutujemy na Rc<dyn RenderingContext> dla WebViewBuilder
         let rc_trait: Rc<dyn RenderingContext> = rc_context.clone();
-
-        // 6. Tworzymy WebViewBuilder (pamiętaj o kolejności: servo, context)
         let webview_builder = WebViewBuilder::new(&servo_inst, rc_trait)
             .delegate(Rc::new(delegate));
 
         let webview = webview_builder.build();
-
         println!("[Engine] ✓ WebView utworzony!");
 
-        if let Ok(url) = ServoUrl::parse(&self.current_url) {
-            println!("[Engine] URL do załadowania: {}", url);
-        }
-
+        let initial_url = self.current_url.clone();
         self.servo = Some(servo_inst);
         self.webview = Some(webview);
         self.rendering_context = Some(rc_context);
+
+        self.navigate(&initial_url);
     }
 
     pub fn navigate(&mut self, url: &str) {
@@ -114,13 +101,17 @@ impl BrowserEngine {
         } else {
             url.to_string()
         };
-        
+
         println!("[Engine] Nawigacja do: {}", formatted_url);
-        self.current_url = formatted_url;
-        
-        if let Some(_webview) = &mut self.webview {
-            if let Ok(_parsed_url) = ServoUrl::parse(&self.current_url) {
-                println!("[Engine] URL sparsowany - czeka na implementację load()");
+        self.current_url = formatted_url.clone();
+
+        if let (Some(webview), Some(servo)) = (&self.webview, &self.servo) {
+            if let Ok(parsed_url) = url::Url::parse(&formatted_url) {
+                println!("[Engine] URL sparsowany: {}", parsed_url);
+                webview.load(parsed_url);
+                servo.spin_event_loop();
+            } else {
+                eprintln!("[Engine] Błąd parsowania URL: {}", formatted_url);
             }
         }
     }
@@ -128,29 +119,34 @@ impl BrowserEngine {
     pub fn current_url(&self) -> &str {
         &self.current_url
     }
-    
+
     pub fn needs_repaint(&self) -> bool {
         self.needs_repaint.load(Ordering::SeqCst)
     }
-    
+
     pub fn clear_repaint_flag(&self) {
         self.needs_repaint.store(false, Ordering::SeqCst);
     }
 
-    /// Renderuje klatkę i zwraca piksele (RGBA)
     pub fn render_frame(&mut self) -> Option<Vec<u8>> {
-        if let Some(webview) = &mut self.webview {
-            // Maluj klatkę w WebView
+        if let (Some(webview), Some(servo), Some(context)) = (
+            &self.webview,
+            &self.servo,
+            &self.rendering_context,
+        ) {
             webview.paint();
+            servo.spin_event_loop();
             
-            // TUTAJ BĘDZIE KLUCZOWY KROK:
-            // Gdy to się skompiluje, będziemy musieli wyciągnąć piksele z self.rendering_context
-            // np. self.rendering_context.as_ref().unwrap().read_pixels()
-            
-            // TYMCZASOWO: zwracamy szary bufor, żeby udowodnić że pętla działa
-            let width = self.width as usize;
-            let height = self.height as usize;
-            return Some(vec![100u8; width * height * 4]);
+            // Zgodnie z dokumentacją Servo: present() przed odczytem
+            context.present();
+
+            let min_point = DeviceIntPoint::new(0, 0);
+            let max_point = DeviceIntPoint::new(self.width as i32, self.height as i32);
+            let rect = DeviceIntRect::new(min_point, max_point);
+
+            if let Some(rgba_image) = context.read_to_image(rect) {
+                return Some(rgba_image.into_raw());
+            }
         }
         None
     }
